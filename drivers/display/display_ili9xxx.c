@@ -12,6 +12,7 @@
 #include <drivers/display.h>
 #include <drivers/spi.h>
 #include <sys/byteorder.h>
+#include <drivers/pwm.h>
 
 #include <logging/log.h>
 LOG_MODULE_REGISTER(display_ili9xxx, CONFIG_DISPLAY_LOG_LEVEL);
@@ -20,6 +21,7 @@ struct ili9xxx_data {
 	const struct device *reset_gpio;
 	const struct device *command_data_gpio;
 	const struct device *spi_dev;
+    const struct device *backlight_pwm_dev;
 	struct spi_config spi_config;
 	struct spi_cs_control cs_ctrl;
 	uint8_t bytes_per_pixel;
@@ -194,23 +196,30 @@ static void *ili9xxx_get_framebuffer(const struct device *dev)
 	return NULL;
 }
 
+static int ili9xxx_set_brightness(const struct device *dev,
+				  const uint8_t brightness)
+{
+	LOG_DBG("Setting brightness: %u", brightness);
+    const struct ili9xxx_data *const data = dev->data;
+    const struct ili9xxx_config *const config = dev->config;
+    int r = pwm_pin_set_cycles(data->backlight_pwm_dev, config->backlight_pwm_pin, 125000, 125000 / 256 * brightness, 0);
+    LOG_DBG("pwm set: %d", r);
+    return r;
+}
+
 static int ili9xxx_display_blanking_off(const struct device *dev)
 {
 	LOG_DBG("Turning display blanking off");
+    const struct ili9xxx_config *const config = dev->config;
+    ili9xxx_set_brightness(dev, config->brightness);
 	return ili9xxx_transmit(dev, ILI9XXX_DISPON, NULL, 0);
 }
 
 static int ili9xxx_display_blanking_on(const struct device *dev)
 {
 	LOG_DBG("Turning display blanking on");
+    ili9xxx_set_brightness(dev, 0);
 	return ili9xxx_transmit(dev, ILI9XXX_DISPOFF, NULL, 0);
-}
-
-static int ili9xxx_set_brightness(const struct device *dev,
-				  const uint8_t brightness)
-{
-	LOG_ERR("Set brightness not implemented");
-	return -ENOTSUP;
 }
 
 static int ili9xxx_set_contrast(const struct device *dev,
@@ -409,6 +418,15 @@ static int ili9xxx_init(const struct device *dev)
 		}
 	}
 
+    data->backlight_pwm_dev = device_get_binding(config->backlight_label);
+	if (data->backlight_pwm_dev == NULL) {
+		LOG_ERR("Could not get backlight control PWM port %s",
+			config->backlight_label);
+		return -ENODEV;
+	}
+
+    ili9xxx_set_brightness(dev, config->brightness);
+
 	ili9xxx_hw_reset(dev);
 
 	r = ili9xxx_configure(dev);
@@ -474,6 +492,9 @@ static const struct display_driver_api ili9xxx_api = {
 		.reset_flags = UTIL_AND(                                       \
 			DT_NODE_HAS_PROP(INST_DT_ILI9XXX(n, t), reset_gpios),  \
 			DT_GPIO_FLAGS(INST_DT_ILI9XXX(n, t), reset_gpios)),    \
+		.backlight_label = DT_PWMS_LABEL(INST_DT_ILI9XXX(n, t)),  \
+		.backlight_pwm_pin = DT_PWMS_CHANNEL(INST_DT_ILI9XXX(n, t)),    \
+        .brightness = DT_PROP(INST_DT_ILI9XXX(n, t), brightness),  \
 		.pixel_format = DT_PROP(INST_DT_ILI9XXX(n, t), pixel_format),  \
 		.rotation = DT_PROP(INST_DT_ILI9XXX(n, t), rotation),          \
 		.x_resolution = ILI##t##_X_RES,                                \
